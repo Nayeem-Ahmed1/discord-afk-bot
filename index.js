@@ -1,4 +1,4 @@
-// Updated Discord AFK Bot with permission-aware logic
+
 const { Client, GatewayIntentBits, Events, Partials, REST, Routes, SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const express = require('express');
 const app = express();
@@ -7,6 +7,8 @@ const PORT = process.env.PORT || 3000;
 // === Configuration ===
 const config = {
   AFK_LOG_CHANNEL_ID: '931126324658065449',
+  AFK_VOICE_CHANNEL_ID: '1390942008528605307', 
+  AFK_MOVE_DELAY: 1 * 60 * 1000, // 1 minutes delay before moving
   SPAM_SETTINGS: {
     windowMs: 10000,
     warnThreshold: 5,
@@ -34,6 +36,7 @@ const client = new Client({
 const afkUsers = new Map();
 const spamTracker = new Map();
 const timeoutUsers = new Map();
+const originalVoiceChannel = new Map();
 
 const commands = [
   new SlashCommandBuilder().setName("afklist").setDescription("Show all users currently AFK (self-deafened)"),
@@ -65,6 +68,21 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   if (!wasDeaf && isDeaf) {
     afkUsers.set(member.id, Date.now());
 
+    if (newState.channelId && newState.channelId !== config.AFK_VOICE_CHANNEL_ID) {
+      originalVoiceChannel.set(member.id, newState.channelId);
+    }
+
+    setTimeout(async () => {
+      const stillDeaf = member.voice?.selfDeaf;
+      if (stillDeaf && member.voice.channelId !== config.AFK_VOICE_CHANNEL_ID) {
+        try {
+          await member.voice.setChannel(config.AFK_VOICE_CHANNEL_ID);
+        } catch (err) {
+          console.warn(`⚠️ Could not move ${member.user.tag} to AFK channel:`, err.code);
+        }
+      }
+    }, config.AFK_MOVE_DELAY);
+
     try {
       if (!member.nickname?.startsWith('[AFK]')) {
         await member.setNickname(`[AFK] ${member.nickname || member.user.username}`);
@@ -72,7 +90,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       await logChannel?.send(`🔕 ${member.user.tag} is now AFK.`);
     } catch (err) {
       console.warn(`⚠️ Could not change nickname for ${member.user.tag}: ${err.code}`);
-      await logChannel?.send(`🔕 ${member.user.tag} is now AFK.`);
+      await logChannel?.send(`🔕 ${member.user.tag} is now AFK (couldn't rename).`);
     }
   }
 
@@ -86,7 +104,20 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       await logChannel?.send(`✅ ${member.user.tag} is now active.`);
     } catch (err) {
       console.warn(`⚠️ Could not restore nickname for ${member.user.tag}: ${err.code}`);
-      await logChannel?.send(`✅ ${member.user.tag} is now active .`);
+      await logChannel?.send(`✅ ${member.user.tag} is now active (nickname unchanged).`);
+    }
+
+    if (originalVoiceChannel.has(member.id)) {
+      try {
+        const channelId = originalVoiceChannel.get(member.id);
+        const channel = await member.guild.channels.fetch(channelId);
+        if (channel?.isVoiceBased()) {
+          await member.voice.setChannel(channel);
+        }
+      } catch (err) {
+        console.warn(`⚠️ Could not move ${member.user.tag} back to original channel:`, err.code);
+      }
+      originalVoiceChannel.delete(member.id);
     }
   }
 });
