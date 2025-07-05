@@ -72,7 +72,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       await logChannel?.send(`🔕 ${member.user.tag} is now AFK.`);
     } catch (err) {
       console.warn(`⚠️ Could not change nickname for ${member.user.tag}: ${err.code}`);
-      await logChannel?.send(`🔕 ${member.user.tag} is now AFK (couldn't rename).`);
+      await logChannel?.send(`🔕 ${member.user.tag} is now AFK.`);
     }
   }
 
@@ -86,7 +86,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       await logChannel?.send(`✅ ${member.user.tag} is now active.`);
     } catch (err) {
       console.warn(`⚠️ Could not restore nickname for ${member.user.tag}: ${err.code}`);
-      await logChannel?.send(`✅ ${member.user.tag} is now active (nickname unchanged).`);
+      await logChannel?.send(`✅ ${member.user.tag} is now active .`);
     }
   }
 });
