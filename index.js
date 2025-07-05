@@ -1,3 +1,4 @@
+// Updated Discord AFK Bot with permission-aware logic
 const { Client, GatewayIntentBits, Events, Partials, REST, Routes, SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const express = require('express');
 const app = express();
@@ -7,10 +8,10 @@ const PORT = process.env.PORT || 3000;
 const config = {
   AFK_LOG_CHANNEL_ID: '931126324658065449',
   SPAM_SETTINGS: {
-    windowMs: 10000,       // 10 second window
-    warnThreshold: 5,      // Warn after 5 messages
-    timeoutThreshold: 7,   // Timeout after 7 messages
-    timeoutDuration: 2 * 60 * 1000, // 2 minutes
+    windowMs: 10000,
+    warnThreshold: 5,
+    timeoutThreshold: 7,
+    timeoutDuration: 2 * 60 * 1000,
     exemptRoles: ['Moderator', 'Admin']
   }
 };
@@ -18,7 +19,6 @@ const config = {
 app.get("/", (req, res) => res.send("AFK Bot is live!"));
 app.listen(PORT, () => console.log(`🌐 Web server running on port ${PORT}`));
 
-// === Discord Client Setup ===
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -35,18 +35,14 @@ const afkUsers = new Map();
 const spamTracker = new Map();
 const timeoutUsers = new Map();
 
-// === Slash Command Definitions ===
 const commands = [
-  new SlashCommandBuilder()
-    .setName("afklist")
-    .setDescription("Show all users currently AFK (self-deafened)"),
+  new SlashCommandBuilder().setName("afklist").setDescription("Show all users currently AFK (self-deafened)"),
   new SlashCommandBuilder()
     .setName("status")
     .setDescription("Check AFK and timeout status of a user")
-    .addUserOption(opt => opt.setName("user").setDescription("The user").setRequired(true)),
+    .addUserOption(opt => opt.setName("user").setDescription("The user").setRequired(true))
 ];
 
-// === Register Slash Commands ===
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
@@ -58,7 +54,6 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-// === Voice State Update (AFK tracking) ===
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const member = newState.member;
   if (!member) return;
@@ -69,30 +64,33 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
   if (!wasDeaf && isDeaf) {
     afkUsers.set(member.id, Date.now());
+
     try {
       if (!member.nickname?.startsWith('[AFK]')) {
         await member.setNickname(`[AFK] ${member.nickname || member.user.username}`);
       }
-      if (logChannel) logChannel.send(`🔕 ${member} is now AFK.`);
-    } catch (error) {
-      console.error(`Failed to set AFK status for ${member.user.tag}:`, error);
+      await logChannel?.send(`🔕 ${member.user.tag} is now AFK.`);
+    } catch (err) {
+      console.warn(`⚠️ Could not change nickname for ${member.user.tag}: ${err.code}`);
+      await logChannel?.send(`🔕 ${member.user.tag} is now AFK (couldn't rename).`);
     }
   }
 
   if (wasDeaf && !isDeaf && afkUsers.has(member.id)) {
     afkUsers.delete(member.id);
+
     try {
       if (member.nickname?.startsWith('[AFK]')) {
         await member.setNickname(member.nickname.replace('[AFK] ', ''));
       }
-      if (logChannel) logChannel.send(`✅ ${member} is now active.`);
-    } catch (error) {
-      console.error(`Failed to remove AFK status for ${member.user.tag}:`, error);
+      await logChannel?.send(`✅ ${member.user.tag} is now active.`);
+    } catch (err) {
+      console.warn(`⚠️ Could not restore nickname for ${member.user.tag}: ${err.code}`);
+      await logChannel?.send(`✅ ${member.user.tag} is now active (nickname unchanged).`);
     }
   }
 });
 
-// === Anti-Spam + AFK Mention Logic ===
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot || !message.guild) return;
 
@@ -100,18 +98,16 @@ client.on(Events.MessageCreate, async message => {
   const userId = author.id;
   const now = Date.now();
 
-  // Cleanup expired timeouts first
   if (timeoutUsers.has(userId)) {
     const timeoutEnd = timeoutUsers.get(userId);
     if (timeoutEnd <= now) {
       timeoutUsers.delete(userId);
-      spamTracker.delete(userId); // Clear their spam counter when timeout expires
+      spamTracker.delete(userId);
     } else {
-      return; // User is still timed out - ignore their messages
+      return;
     }
   }
 
-  // Initialize spam tracking
   if (!spamTracker.has(userId)) {
     spamTracker.set(userId, { timestamps: [], lastWarned: 0 });
   }
@@ -120,49 +116,47 @@ client.on(Events.MessageCreate, async message => {
   userData.timestamps = userData.timestamps.filter(t => now - t < config.SPAM_SETTINGS.windowMs);
   userData.timestamps.push(now);
 
-  // Check for exempt roles
-  const isExempt = member.roles.cache.some(role => 
+  const isExempt = member.roles.cache.some(role =>
     config.SPAM_SETTINGS.exemptRoles.includes(role.name) ||
     member.permissions.has(PermissionsBitField.Flags.Administrator)
   );
 
   if (!isExempt) {
-    // Warning system
-    if (userData.timestamps.length === config.SPAM_SETTINGS.warnThreshold && 
-        now - userData.lastWarned > 30000) {
+    if (userData.timestamps.length === config.SPAM_SETTINGS.warnThreshold && now - userData.lastWarned > 30000) {
       userData.lastWarned = now;
       await channel.send(`⚠️ ${member}, please slow down!`);
     }
 
-    // Timeout system
     if (userData.timestamps.length >= config.SPAM_SETTINGS.timeoutThreshold) {
       try {
         const me = guild.members.me;
+
         if (!me.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
           console.log(`❌ Missing ModerateMembers permission in ${guild.name}`);
           return;
         }
 
         if (me.roles.highest.comparePositionTo(member.roles.highest) <= 0) {
-          console.log(`❌ Cannot timeout ${member.user.tag} (higher role)`);
+          console.warn(`⚠️ Cannot timeout ${member.user.tag} (higher/equal role)`);
+          await channel.send(`⚠️ ${member} is spamming, but I can't timeout due to role hierarchy.`);
           return;
         }
 
         await member.timeout(
-          config.SPAM_SETTINGS.timeoutDuration, 
+          config.SPAM_SETTINGS.timeoutDuration,
           'Automated timeout for spamming'
         );
 
         timeoutUsers.set(userId, now + config.SPAM_SETTINGS.timeoutDuration);
-        spamTracker.delete(userId); // Reset their spam counter
+        spamTracker.delete(userId);
         await channel.send(`⏳ ${member} has been timed out for 2 minutes.`);
       } catch (error) {
-        console.error(`Failed to timeout ${member.user.tag}:`, error);
+        console.error(`❌ Failed to timeout ${member.user.tag}:`, error);
+        await channel.send(`⚠️ Tried to timeout ${member}, but an error occurred.`);
       }
     }
   }
 
-  // AFK mention detection
   for (const mentioned of message.mentions.users.values()) {
     if (afkUsers.has(mentioned.id)) {
       const duration = formatDuration(now - afkUsers.get(mentioned.id));
@@ -171,7 +165,6 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
-// === Slash Command Logic ===
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -214,15 +207,14 @@ client.on(Events.InteractionCreate, async interaction => {
   } catch (error) {
     console.error('Command error:', error);
     if (!interaction.replied) {
-      await interaction.reply({ 
-        content: '❌ An error occurred while processing your command.', 
-        ephemeral: true 
+      await interaction.reply({
+        content: '❌ An error occurred while processing your command.',
+        ephemeral: true
       });
     }
   }
 });
 
-// === Helper Functions ===
 function formatDuration(ms) {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -236,18 +228,15 @@ function formatDuration(ms) {
   return parts.join(' ');
 }
 
-// === Cleanup Interval ===
 setInterval(() => {
   const now = Date.now();
-  // Clean expired timeouts
   timeoutUsers.forEach((endTime, userId) => {
     if (endTime <= now) timeoutUsers.delete(userId);
   });
-  // Clean old spam tracking data
   spamTracker.forEach((data, userId) => {
     data.timestamps = data.timestamps.filter(t => now - t < config.SPAM_SETTINGS.windowMs);
     if (data.timestamps.length === 0) spamTracker.delete(userId);
   });
-}, 60000); // Run every minute
+}, 60000);
 
 client.login(process.env.TOKEN);
