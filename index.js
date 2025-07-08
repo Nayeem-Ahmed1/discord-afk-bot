@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 const config = {
   AFK_LOG_CHANNEL_ID: '931126324658065449',
   AFK_VOICE_CHANNEL_ID: '1390942008528605307', 
-  AFK_MOVE_DELAY: 1 * 60 * 1000, // 1 minutes delay before moving
+  AFK_MOVE_DELAY: 10 * 60 * 1000, // 10 minutes delay before moving
   SPAM_SETTINGS: {
     windowMs: 10000,
     warnThreshold: 5,
